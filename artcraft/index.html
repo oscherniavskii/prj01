@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruler Rail — копия механики getartcraft.com</title>
+<style>
+  :root{
+    --bg:#0a0a0c;
+    --ink:#e8e6e1;
+    --ink-strong:#fff;
+    --faint:#ffffff22;
+    --line:#ffffff33;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --display:"Archivo","Inter",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:auto}
+  body{background:var(--bg);color:var(--ink);font-family:var(--display);overflow-x:hidden}
+
+  /* ---------- контент страницы ---------- */
+  main{max-width:760px;margin:0 auto;padding:0 clamp(20px,6vw,64px)}
+  section{min-height:110vh;display:flex;flex-direction:column;justify-content:center;
+          border-bottom:1px dashed #ffffff14;padding:15vh 0}
+  section h2{font-size:clamp(34px,6vw,64px);font-weight:620;font-stretch:118%;
+             letter-spacing:-.01em;line-height:.95;color:var(--ink-strong)}
+  section p{margin-top:20px;max-width:52ch;line-height:1.6;color:#ffffff99;font-size:16px}
+  .num{font-family:var(--mono);font-size:11px;letter-spacing:.15em;color:#ffffff55;margin-bottom:14px}
+
+  /* ---------- рейка (правый край) ---------- */
+  #rail{position:fixed;inset-y:0;right:0;width:64px;z-index:40;cursor:crosshair}
+  #ticks{position:absolute;inset:0}
+  .tick{position:absolute;right:10px;height:1px;background:var(--faint);transform-origin:right center}
+  .tick.major{background:var(--line)}
+  .pct{position:absolute;right:2px;transform:translateY(-50%);font-family:var(--mono);
+       font-size:9px;letter-spacing:.08em;color:#ffffff66;white-space:nowrap}
+  #needle{position:absolute;right:0;width:14px;height:2px;background:var(--ink-strong);
+          transform:translateY(-50%);box-shadow:0 0 6px #fff}
+
+  /* буквы подписей — спаны в #overlay */
+
+  /* ---------- оверлей флипа букв ---------- */
+  #overlay{position:fixed;inset:0;z-index:39;pointer-events:none}
+  #overlay span{position:absolute;top:0;left:0;white-space:pre;opacity:0;
+                font-family:var(--display);font-size:34px;font-weight:620;line-height:1;
+                color:var(--ink-strong);will-change:transform,opacity;
+                text-shadow:0 0 4px var(--bg),0 0 10px var(--bg)}
+</style>
+</head>
+<body>
+
+<div id="rail"><div id="ticks"></div><div id="needle"></div></div>
+<div id="overlay"></div>
+
+<main id="content">
+  <section data-label="Дизайн"><div class="num">01</div><h2>Дизайн</h2>
+    <p>Каждая секция «привязана» к своему месту на линейке справа. Её название едет по рейке вертикально, а когда доходит к верхней трети экрана — буквы одна за другой разворачиваются в горизонталь и складываются в стопку под шапкой.</p></section>
+  <section data-label="Разработка"><div class="num">02</div><h2>Разработка</h2>
+    <p>Позиция подписи = позиция секции в документе + дрейф линейки. Дрейф нормализован: сколько бы контента ни добавили, метки всегда соответствуют проценту прокрутки.</p></section>
+  <section data-label="Брендинг"><div class="num">03</div><h2>Брендинг</h2>
+    <p>Анимация считается покадрово в rAF: для каждой буквы — своя задержка (stagger) и своя квадратичная кривая Безье полёта с изгибом внутрь страницы (arc).</p></section>
+  <section data-label="Маркетинг"><div class="num">04</div><h2>Маркетинг</h2>
+    <p>Если остановиться скроллом ровно посреди флипа, через ~400мс срабатывает «докрут»: страница сама мягко доматывается до ближайшего завершённого состояния.</p></section>
+  <section data-label="Поддержка"><div class="num">05</div><h2>Поддержка</h2>
+    <p>Клик по имени или по тегу на рейке прыгает к секции; длительность прыжка масштабируется от расстояния.</p></section>
+  <section data-label="Аналитика"><div class="num">06</div><h2>Аналитика</h2>
+    <p>На оригинальном сайте у рейки есть ещё зум-режим (наведение = карта всей страницы) и морфинг логотипа героя — здесь реализовано ядро: деления, дрейф, ведущие слова, побуквенный флип, очередь сверху и авто-снап.</p></section>
+</main>
+
+<script>
+"use strict";
+/* ============ параметры (как в тюнерах оригинала) ============ */
+const CFG = {
+  railW: 64, edgePad: 12, minorEvery: 0.02,   // % прокрутки между малыми делениями
+  majorEvery: 0.10,                            // % между крупными (с числом)
+  driftSpanPct: 0.04,                          // насколько «плывёт» линейка (в долях документа)
+  thresholdPct: 0.12, flipZone: 200,           // зона вертикаль→горизонталь, px скролла
+  detachZone: 240,                             // зона «отцепки» заголовка с места в рейку
+  stagger: 0.16, arc: 28,                      // побуквенная задержка / изгиб траектории
+  headingPx: 34, ridingPx: 20, queuePx: 16,
+  navH: 0, topPad: 28, currentGap: 26, queueSlot: 20, queuePad: 36, textPad: 8,
+  snapDelay: 400, snapDur: 0.7, jumpMax: 1.25,
+};
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+const easeInOutCubic = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+const lerp = (a,b,t) => a + (b-a)*t;
+
+/* ============ секции ============ */
+const secs = [...document.querySelectorAll('section[data-label]')].map((el,i)=>({
+  el, i, label: el.dataset.label, anchor: 0, bottom: 0, rideTop: 0, rideLen: 0, flipped: false
+}));
+function measure(){
+  const docH = document.documentElement.scrollHeight, vh = innerHeight;
+  secs.forEach(s=>{ s.anchor = s.el.offsetTop + s.el.offsetHeight*0.12; s.bottom = s.el.offsetTop + s.el.offsetHeight; });
+  buildTicks(docH, vh);
+  secs.forEach(s=>{ if(!s.flipped) s.rideTop = s.anchor; });   // якорь на рейке при спавне
+}
+
+/* ============ деления линейки ============ */
+const ticksEl = document.getElementById('ticks'), needleEl = document.getElementById('needle');
+let tickDefs = [];
+function buildTicks(docH, vh){
+  ticksEl.innerHTML = ''; tickDefs = [];
+  const M = Math.max(1, docH - vh);
+  for(let p=0; p<=1.0001; p+=CFG.minorEvery){
+    const major = Math.abs(p/CFG.majorEvery - Math.round(p/CFG.majorEvery)) < 1e-6;
+    const t = document.createElement('div');
+    t.className = 'tick' + (major?' major':'');
+    ticksEl.appendChild(t);
+    const d = { pct:p, major, el:t, lbl:null };
+    if(major){ const l=document.createElement('div'); l.className='pct'; l.textContent=Math.round(p*100);
+               ticksEl.appendChild(l); d.lbl=l; }
+    tickDefs.push(d);
+  }
+}
+
+/* ============ буквы в DOM ============ */
+const overlay = document.getElementById('overlay');
+function makeLetters(label, parent){
+  const spans=[];
+  for(const ch of label){
+    const sp=document.createElement('span'); sp.textContent=ch;
+    (parent||overlay).appendChild(sp); spans.push(sp);
+  }
+  return spans;
+}
+secs.forEach(s=>{
+  s.spans = makeLetters(s.label);   // один и тот же набор букв: вертикаль на рейке -> горизонталь в стопке
+  s.hit = makeHit(s);               // невидимая зона клика
+});
+function makeHit(s){
+  const a=document.createElement('a'); a.href='#'; a.style.cssText='position:absolute;pointer-events:none';
+  a.addEventListener('click',e=>{e.preventDefault();jumpTo(s);});
+  overlay.appendChild(a); return a;
+}
+
+/* метрики букв относительно начала слова (для точного флипа) */
+let metrics={};
+function measureMetrics(){
+  const probe=document.createElement('div');
+  probe.style.cssText='position:absolute;visibility:hidden;white-space:pre;font-size:100px;line-height:1;font-weight:620;font-family:var(--display)';
+  document.body.appendChild(probe);
+  for(const s of secs){
+    probe.textContent='';
+    const adv=[],cum=[]; let x=0;
+    for(const ch of s.label){ const sp=document.createElement('span'); sp.textContent=ch;
+      probe.appendChild(sp); adv.push(sp.getBoundingClientRect().width/100); cum.push(x); x+=adv[adv.length-1]; }
+    metrics[s.label]={adv,cum,total:x};
+  }
+  probe.remove();
+}
+
+/* ============ состояние ============ */
+let scrollY=window.scrollY, vel=0, lastY=scrollY, smoothY=scrollY;
+let snapState='idle', snapSince=null, jumping=false;
+const state = () => ({ docH: document.documentElement.scrollHeight, vh: innerHeight, vw: innerWidth });
+
+addEventListener('scroll',()=>{}, {passive:true});
+
+/* позиции букв. Буква-спaн позиционируется через translate(-50%,-50%),
+   т.е. задаётся её ЦЕНТР. m.cum[i]+m.adv[i]/2 — центр i-й буквы от начала слова. */
+function posB(m,i,y,scale,alpha){                       // горизонтально, справа у рейки
+  const half=(m.cum[i]+m.adv[i]/2)*CFG.headingPx*scale;
+  const off=CFG.railW+CFG.textPad+(m.total*CFG.headingPx*scale-half);
+  return { x: innerWidth-off-CFG.edgePad, y, rot:0, scale, alpha };
+}
+function posZ(m,i,vTop,scale){                          // вертикально на рейке (rot=-90)
+  // при rot=-90 локальная +x буквы смотрит ВВЕРХ -> сдвиг знака, чтобы порядок букв был сверху вниз
+  const along=(m.total-m.cum[i]-m.adv[i]/2)*CFG.headingPx*scale;
+  return { x: innerWidth-CFG.railW/2-CFG.edgePad, y: vTop-along, rot:-90, scale, alpha:0.85 };
+}
+
+/* ============ главный цикл ============ */
+const railEl=document.getElementById('rail');
+function frame(now){
+  const {docH,vh}=state(), M=Math.max(1,docH-vh);
+  const raw=window.scrollY;
+  const dt=Math.min((now-(frame.t||now))/1000,.1)||.016; frame.t=now;
+  const instVel=(raw-lastY)/dt; lastY=raw;
+  vel+=(instVel-vel)*(1-Math.exp(-6*dt));
+  scrollY=raw;
+  const prog=clamp01(scrollY/M);
+  const drift=(prog-0.5)*M*CFG.driftSpanPct;            // «дрейф» линейки
+  const L=vh*CFG.thresholdPct;                           // линия флипа
+  const A=CFG.navH+CFG.topPad;                           // верх стопки
+
+  /* --- деления: yScreen = pct*M + drift - scrollY --- */
+  for(const d of tickDefs){
+    const y=d.pct*M+drift-scrollY;
+    const vis=y>-40&&y<vh+40;
+    if(d.major){
+      d.el.style.width=vis?'18px':'0';
+      d.lbl.style.transform=`translateY(${y}px)`; d.lbl.style.opacity=vis?'1':'0';
+    } else d.el.style.opacity=vis?'':'0';
+    d.el.style.transform=`translateY(${y}px)`;
+  }
+  needleEl.style.top=(prog*vh)+'px';                     // игла = прогресс по экрану
+
+  /* --- фазы секций --- */
+  for(const s of secs){
+    const v=s.anchor-scrollY+drift;                      // где якорь секции на экране
+    if(!s.spawned&&v<vh+120){ s.spawned=true; s.onRail=true; }
+    if(!s.onRail) continue;
+    s.v=v;
+    s.flip=clamp01((L+CFG.flipZone-v)/CFG.flipZone);     // 0 едет по рейке .. 1 в стопке
+    if(s.flip>=1) s.flipped=true;
+  }
+
+  /* --- ведущие слова: переиспользуем спаны слова как вертикальные буквы ---
+     Пока flip=0 — все спаны стоят вертикально на рейке; >0 часть из них
+     летит в горизонтальную стопку. Отдельного .riding-элемента нет. */
+
+  /* --- стопка сверху: счётчик слотов --- */
+  let pileIdx=0;
+  const cur=currentSection();
+  for(const s of secs){
+    if(!s.onRail){ for(const sp of s.spans) sp.style.opacity='0'; continue; }
+    const m=metrics[s.label]; if(!m) continue;
+    const k=s.flip, n=m.adv.length;
+    const isCur=s===cur;
+    // параметры конечной (горизонтальной) позиции
+    const endScale = k>=1 ? (isCur?1:CFG.queuePx/CFG.headingPx) : CFG.queuePx/CFG.headingPx;
+    const ySlot = A + pileIdx*CFG.queueSlot + (k>=1&&isCur?CFG.currentGap:0);
+    if(k>=1) pileIdx+=1;
+    // стартовая (вертикальная) позиция — всегда на рейке, масштаб riding
+    const rideScale=CFG.ridingPx/CFG.headingPx;
+    const O=1+(n-1)*CFG.stagger;                          // общее окно stagger
+    let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+    for(let e=0;e<n;e++){
+      const sp=s.spans[e];
+      // во время флипа правая (последняя) буква стартует первой
+      const orderIdx=k>0? n-1-e : e;
+      const local=clamp01(k*O-orderIdx*CFG.stagger);
+      const d=easeInOutCubic(local);
+      const h=posZ(m,e,s.v,rideScale), g=posB(m,e,ySlot,endScale,isCur?1:0.75);
+      if(k<=0){                                          // ещё едем вертикально
+        const p=h;
+        sp.style.transform=`translate(${p.x}px,${p.y}px) translate(-50%,-50%) rotate(-90deg) scale(${rideScale})`;
+        sp.style.opacity='0.9';
+      }else{                                             // квадратичная Безье с дугой внутрь
+        const cx=(h.x+g.x)/2-CFG.arc, cy=(h.y+g.y)/2, b=1-d;
+        const x=b*b*h.x+2*b*d*cx+d*d*g.x, y=b*b*h.y+2*b*d*cy+d*d*g.y;
+        const rot=lerp(h.rot,g.rot,d), sc=lerp(h.scale,g.scale,d), al=lerp(h.alpha,g.alpha,d);
+        sp.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%) rotate(${rot}deg) scale(${sc})`;
+        sp.style.opacity=String(al);
+        if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
+      }
+    }
+    if(k>0){                                             // зона клика = bounding box слова
+      s.hit.style.cssText=`position:absolute;left:${minX-CFG.headingPx}px;top:${minY-CFG.headingPx/2}px;`+
+        `width:${maxX-minX+CFG.headingPx*2}px;height:${maxY-minY+CFG.headingPx}px;pointer-events:auto`;
+    } else s.hit.style.pointerEvents='none';
+  }
+
+  /* --- авто-снап незавершённого флипа --- */
+  const mid=secs.find(s=>s.onRail&&s.flip>0.04&&s.flip<0.96);
+  if(mid&&Math.abs(vel)<30&&!jumping&&snapState==='idle'){
+    if(snapSince===null)snapSince=now;
+    else if(now-snapSince>CFG.snapDelay){
+      snapState='run';
+      // flip=1  <=>  scrollY = anchor + drift(prog) - L - flipZone ; решаем итерацией
+      const solve=targetFlip=>{
+        let y=scrollY;
+        for(let it=0;it<6;it++){ const pr=clamp01(y/Math.max(1,state().docH-innerHeight));
+          y=mid.anchor+(pr-0.5)*(state().docH-innerHeight)*CFG.driftSpanPct-L-targetFlip*CFG.flipZone; }
+        return Math.max(0,Math.min(state().docH-innerHeight,y));
+      };
+      smoothScrollTo(mid.flip>=0.5?solve(1.02):solve(-0.02),CFG.snapDur,()=>{snapState='idle';snapSince=null;});
+    }
+  } else { if(snapState==='idle') snapSince=null; }
+
+  requestAnimationFrame(frame);
+}
+
+function currentSection(){
+  const c=window.scrollY+innerHeight*0.45;
+  let best=secs[0];
+  for(const s of secs) if(s.anchor<=c) best=s;
+  return best;
+}
+
+/* плавный скролл для снапа/прыжков (мини-аналог Lenis.scrollTo) */
+let anim=null;
+function smoothScrollTo(to,dur,done){
+  const from=window.scrollY, t0=performance.now(); jumping=true;
+  cancelAnimationFrame(anim);
+  (function step(t){
+    const u=clamp01((t-t0)/(dur*1000)), e=easeInOutCubic(u);
+    window.scrollTo(0,lerp(from,to,e));
+    if(u<1) anim=requestAnimationFrame(step); else jumping=false, done&&done();
+  })(t0);
+}
+function jumpTo(s){
+  const dist=Math.abs(s.el.getBoundingClientRect().top);
+  smoothScrollTo(s.el.offsetTop, Math.min(CFG.jumpMax, 0.4+dist/innerHeight*0.6));
+}
+
+/* клик по рейке = прыжок к ближайшей секции */
+document.getElementById('rail').addEventListener('click',e=>{
+  const y=e.clientY; let best=null,bd=1e9;
+  for(const s of secs){ const v=s.anchor-window.scrollY+ (clamp01(window.scrollY/Math.max(1,document.documentElement.scrollHeight-innerHeight))-0.5)*(document.documentElement.scrollHeight-innerHeight)*CFG.driftSpanPct;
+    const d=Math.abs(v-y); if(s.onRail&&d<bd){bd=d;best=s;} }
+  if(best) jumpTo(best);
+});
+
+/* ============ старт ============ */
+(async()=>{
+  await document.fonts.ready.catch(()=>{});
+  measure(); measureMetrics();
+  addEventListener('resize',()=>{measure()},{passive:true});
+  new ResizeObserver(()=>measure()).observe(document.getElementById('content'));
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
