@@ -1,0 +1,5 @@
+node_modules/
+artcraft/*.js
+!artcraft/test*.js
+artcraft/out.txt
+artcraft/out3.txt
